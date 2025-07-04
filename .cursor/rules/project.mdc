@@ -1,0 +1,674 @@
+---
+description: 
+globs: 
+alwaysApply: true
+---
+# Architecture Rules
+
+## Overview
+
+This document defines the comprehensive rules and patterns for creating features in the **Dog Hotel PMS** application. These rules ensure consistency, maintainability, and proper separation of concerns across the codebase.
+
+## 1. Route Structure & Organization
+
+### 1.1 Route Definition Pattern
+
+```php
+// routes/api.php or package‑specific routes/api.php
+Route::middleware(['api', 'auth:sanctum', EnsurePmsEnabled::class, 'ensure-company-access', 'ensure-hotel-view-permission'])
+    ->prefix('v1')
+    ->group(function () {
+        // Route definitions here
+    });
+```
+
+### 1.2 RESTful Conventions
+
+Follow Laravel's RESTful resource routing patterns:
+
+```php
+// Standard CRUD operations
+Route::apiResource('bookings', BookingController::class);
+
+// Custom nested resources
+Route::get('owners/{owner}/dogs', [DogController::class, 'index']);
+Route::post('owners/{owner}/dogs', [DogController::class, 'store']);
+Route::apiResource('dogs', DogController::class)->except(['index', 'store']);
+
+// Custom actions
+Route::put('bookings/{booking}/check-in', [BookingController::class, 'checkIn']);
+```
+
+### 1.3 Route Naming
+
+- Use kebab-case for URL segments: `/kennel-types`, `/service-categories`
+- Use descriptive names for custom actions: `/check-in`, `/health-checks`, `/activity-reports`
+- Group related routes under prefixes: `calendar`, `owners`, `services`
+
+## 2. Request Objects (POST/PUT/PATCH)
+
+### 2.1 FormRequest Structure
+
+Every POST/PUT/PATCH route **MUST** have a corresponding FormRequest class:
+
+```php
+<?php
+
+namespace App\Http\Requests\Booking;
+
+use App\DataTransferObjects\BookingData;
+use Illuminate\Foundation\Http\FormRequest;
+
+class CreateBookingRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return $this->user()->can('create', Booking::class);
+    }
+
+    public function rules(): array
+    {
+        return [
+            'dog_id'      => 'required|integer|exists:dogs,id',
+            'check_in'    => 'required|date',
+            'check_out'   => 'required|date|after:check_in',
+            'kennel_type' => 'required|string|max:50',
+        ];
+    }
+
+    public function toDto(): BookingData
+    {
+        return BookingData::fromRequest($this->validated());
+    }
+}
+```
+
+### 2.2 Request Naming Convention
+
+- Create: `CreateBookingRequest`
+- Update: `UpdateBookingRequest`
+- Filtering/List: `GetBookingsRequest` or `ListBookingsRequest`
+- Custom actions: `CheckInBookingRequest`
+
+### 2.3 Validation Rules
+
+- Use Laravel's built-in validation rules
+- Create custom validation rules for complex business logic (e.g., kennel availability)
+- Include authorization checks in the `authorize()` method
+- Use descriptive error messages in a `messages()` method when needed
+
+## 3. Data Transfer Objects (DTOs)
+
+### 3.1 DTO Structure
+
+```php
+<?php
+
+namespace App\DataTransferObjects;
+
+readonly class BookingData
+{
+    public function __construct(
+        public int       $dog_id,
+        public \DateTime $check_in,
+        public \DateTime $check_out,
+        public string    $kennel_type,
+        public ?string   $notes = null,
+    ) {}
+
+    public static function fromRequest(array $data): self
+    {
+        return new self(
+            dog_id:      $data['dog_id'],
+            check_in:    new \DateTime($data['check_in']),
+            check_out:   new \DateTime($data['check_out']),
+            kennel_type: $data['kennel_type'],
+            notes:       $data['notes'] ?? null,
+        );
+    }
+
+    public static function fromArray(array $data): self
+    {
+        return new self(
+            dog_id:      $data['dog_id'],
+            check_in:    $data['check_in']  instanceof \DateTime ? $data['check_in']  : new \DateTime($data['check_in']),
+            check_out:   $data['check_out'] instanceof \DateTime ? $data['check_out'] : new \DateTime($data['check_out']),
+            kennel_type: $data['kennel_type'],
+            notes:       $data['notes'] ?? null,
+        );
+    }
+
+    public function toArray(): array
+    {
+        return [
+            'dog_id'      => $this->dog_id,
+            'check_in'    => $this->check_in->format('Y-m-d'),
+            'check_out'   => $this->check_out->format('Y-m-d'),
+            'kennel_type' => $this->kennel_type,
+            'notes'       => $this->notes,
+        ];
+    }
+}
+```
+
+### 3.2 DTO Naming Convention
+
+- Data: `BookingData` (for creation/updates)
+- Filters: `BookingFilterData` or `ListBookingsData` (for listing/filtering)
+- Specific actions: `CheckInBookingData`
+
+### 3.3 DTO Requirements
+
+- Use `readonly` classes for immutability
+- Include `fromRequest()` static method for FormRequest conversion
+- Include `fromArray()` static method for flexibility
+- Include `toArray()` method for serialization
+- Use proper type hints for all properties
+
+## 4. Controller Structure
+
+### 4.1 Controller Pattern
+
+```php
+<?php
+
+namespace App\Http\Controllers;
+
+use App\Http\Controllers\Controller;
+use App\Http\Requests\Booking\CreateBookingRequest;
+use App\Http\Requests\Booking\UpdateBookingRequest;
+use App\Http\Resources\BookingResource;
+use App\Http\Resources\BookingCollection;
+use App\Models\Booking;
+use App\Services\Booking\CreateBookingService;
+use App\Services\Booking\DeleteBookingService;
+use App\Services\Booking\GetBookingService;
+use App\Services\Booking\ListBookingsService;
+use App\Services\Booking\UpdateBookingService;
+use Illuminate\Http\JsonResponse;
+use Illuminate\Http\Resources\Json\ResourceCollection as BaseResourceCollection;
+use Symfony\Component\HttpFoundation\Response;
+
+class BookingController extends Controller
+{
+    public function __construct(
+        private readonly ListBookingsService  $listBookingsService,
+        private readonly CreateBookingService $createBookingService,
+        private readonly GetBookingService    $getBookingService,
+        private readonly UpdateBookingService $updateBookingService,
+        private readonly DeleteBookingService $deleteBookingService,
+    ) {}
+
+    public function index(): BaseResourceCollection
+    {
+        return BookingResource::collection(
+            $this->listBookingsService->execute()
+        );
+    }
+
+    public function store(CreateBookingRequest $request): JsonResponse
+    {
+        $this->authorize('create', Booking::class);
+        $booking = $this->createBookingService->execute($request->toDto());
+
+        return (new BookingResource($booking))
+            ->response()
+            ->setStatusCode(Response::HTTP_CREATED);
+    }
+
+    public function show(Booking $booking): BookingResource
+    {
+        return new BookingResource(
+            $this->getBookingService->execute($booking)
+        );
+    }
+
+    public function update(UpdateBookingRequest $request, Booking $booking): JsonResponse
+    {
+        $this->authorize('update', $booking);
+        $updatedBooking = $this->updateBookingService->execute($booking, $request->toDto());
+
+        return response()->json(new BookingResource($updatedBooking));
+    }
+
+    public function destroy(Booking $booking): JsonResponse
+    {
+        $this->authorize('delete', $booking);
+        $this->deleteBookingService->execute($booking);
+
+        return response()->json(['message' => 'Booking deleted successfully']);
+    }
+}
+```
+
+### 4.2 Controller Requirements
+
+- Inject **all** services via constructor dependency injection
+- Use `readonly` properties for injected services
+- Authorization checks using `$this->authorize()` for create/update/delete operations
+- Route model binding for resource parameters
+- Return appropriate HTTP status codes
+- Use API Resources for response formatting
+
+### 4.3 Controller Method Naming
+
+- Standard CRUD: `index`, `store`, `show`, `update`, `destroy`
+- Custom actions: descriptive names like `checkIn`, `attachServices`, `generateInvoice`
+
+## 5. Service Layer
+
+### 5.1 Service Structure
+
+```php
+<?php
+
+namespace App\Services\Booking;
+
+use App\DataTransferObjects\BookingData;
+use App\Models\Booking;
+
+class CreateBookingService
+{
+    public function execute(BookingData $data): Booking
+    {
+        // Business logic
+        \DB::transaction(function () use (&$booking, $data) {
+            $booking = Booking::create($data->toArray());
+            // Additional domain events, notifications, etc.
+        });
+
+        return $booking;
+    }
+}
+```
+
+### 5.2 Service Naming Convention
+
+- Create: `CreateBookingService`
+- Read: `GetBookingService`, `ListBookingsService`
+- Update: `UpdateBookingService`
+- Delete: `DeleteBookingService`
+- Custom: `CheckInBookingService`
+
+### 5.3 Service Requirements
+
+- Single responsibility principle — one service per action
+- Accept DTOs as parameters, **not** raw arrays or request objects
+- Return models, collections, or primitives
+- Contain **all** business logic
+- Handle database transactions when needed
+- Throw domain-specific exceptions for error cases
+
+## 6. API Resources
+
+### 6.1 Resource Structure
+
+```php
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\JsonResource;
+
+class BookingResource extends JsonResource
+{
+    private int       $id;
+    private string    $booking_number;
+    private \DateTime $check_in;
+    private \DateTime $check_out;
+    private \DateTime $created_at;
+    private \DateTime $updated_at;
+
+    public function __construct($booking)
+    {
+        parent::__construct($booking);
+
+        $this->id             = $booking->id;
+        $this->booking_number = $booking->booking_number;
+        $this->check_in       = $booking->check_in;
+        $this->check_out      = $booking->check_out;
+        $this->created_at     = $booking->created_at;
+        $this->updated_at     = $booking->updated_at;
+    }
+
+    public function toArray(Request $request): array
+    {
+        return [
+            'id'             => $this->id,
+            'booking_number' => $this->booking_number,
+            'check_in'       => $this->check_in?->toISOString(),
+            'check_out'      => $this->check_out?->toISOString(),
+            'created_at'     => $this->created_at?->toISOString(),
+            'updated_at'     => $this->updated_at?->toISOString(),
+            'dog'            => new DogResource($this->whenLoaded('dog')),
+            'services'       => ServiceResource::collection($this->whenLoaded('services')),
+        ];
+    }
+}
+```
+
+### 6.2 Collection Resources
+
+```php
+<?php
+
+namespace App\Http\Resources;
+
+use Illuminate\Http\Request;
+use Illuminate\Http\Resources\Json\ResourceCollection;
+
+class BookingCollection extends ResourceCollection
+{
+    public function toArray(Request $request): array
+    {
+        return [
+            'data' => $this->collection,
+        ];
+    }
+}
+```
+
+### 6.3 Resource Requirements
+
+- Extract properties in the constructor for type safety
+- Use `whenLoaded()` for relationships to avoid N+1 queries
+- Format dates consistently (ISO strings)
+- Include meta information when needed
+- Use descriptive property names
+
+## 7. Testing Requirements
+
+### 7.1 API Test Structure
+
+```php
+<?php
+
+namespace Tests\Feature\Booking;
+
+use DogHotelPms\Tests\TestCase;
+use App\Models\Booking;
+use App\Models\User;
+use App\Models\Dog;
+use Illuminate\Foundation\Testing\RefreshDatabase;
+
+class CreateBookingApiTest extends TestCase
+{
+    use RefreshDatabase;
+
+    private User $user;
+
+    protected function setUp(): void
+    {
+        parent::setUp();
+        $this->user = $this->createUser();
+        $this->actingAs($this->user);
+    }
+
+    public function test_can_create_booking_with_valid_data(): void
+    {
+        $dog = Dog::factory()->create();
+
+        $data = [
+            'dog_id'    => $dog->id,
+            'check_in'  => '2025-08-01',
+            'check_out' => '2025-08-05',
+            'kennel_type' => 'standard',
+        ];
+
+        $response = $this->postJson('/v1/bookings', $data);
+
+        $response->assertStatus(201)
+            ->assertJsonStructure([
+                'id',
+                'booking_number',
+                'check_in',
+                'check_out',
+                'created_at',
+                'updated_at',
+            ]);
+
+        $this->assertDatabaseHas('bookings', [
+            'dog_id'    => $dog->id,
+            'check_in'  => '2025-08-01',
+            'check_out' => '2025-08-05',
+        ]);
+    }
+
+    public function test_cannot_create_booking_without_authentication(): void
+    {
+        $this->be(null);
+        $response = $this->postJson('/v1/bookings', []);
+        $response->assertStatus(401);
+    }
+
+    public function test_validates_required_fields(): void
+    {
+        $response = $this->postJson('/v1/bookings', []);
+
+        $response->assertStatus(422)
+            ->assertJsonValidationErrors(['dog_id', 'check_in', 'check_out', 'kennel_type']);
+    }
+
+    // Additional test methods for edge cases...
+}
+```
+
+### 7.2 Test Requirements
+
+- Test **all** endpoints (CRUD operations)
+- Test authentication and authorization
+- Test validation scenarios
+- Test business logic edge cases (e.g., overlapping bookings)
+- Test error conditions (e.g., kennel unavailable)
+- Use descriptive test method names
+- Assert both response structure **and** database state
+- Include negative test cases
+
+## 8. File Organization
+
+### 8.1 Directory Structure
+
+```
+packages/dog-hotel/pms/src/
+├── Http/
+│   ├── Controllers/
+│   │   └── Booking/
+│   │       └── BookingController.php
+│   ├── Requests/
+│   │   └── Booking/
+│   │       ├── CreateBookingRequest.php
+│   │       └── UpdateBookingRequest.php
+│   └── Resources/
+│       ├── BookingResource.php
+│       └── BookingCollection.php
+├── Services/
+│   └── Booking/
+│       ├── CreateBookingService.php
+│       ├── DeleteBookingService.php
+│       ├── GetBookingService.php
+│       ├── ListBookingsService.php
+│       └── UpdateBookingService.php
+├── DataTransferObjects/
+│   └── BookingData.php
+└── Models/
+    └── Booking.php
+
+tests/Feature/Booking/
+├── CreateBookingApiTest.php
+├── DeleteBookingApiTest.php
+├── GetBookingApiTest.php
+├── ListBookingsApiTest.php
+└── UpdateBookingApiTest.php
+```
+
+## 9. Implementation Checklist
+
+When creating a new route, ensure you have:
+
+### 9.1 Route Definition
+- [ ] Added route to appropriate routes file
+- [ ] Applied correct middleware stack
+- [ ] Used RESTful conventions
+- [ ] Used kebab-case naming
+
+### 9.2 Request Objects (for POST/PUT/PATCH)
+- [ ] Created FormRequest class
+- [ ] Implemented validation rules
+- [ ] Added authorization logic
+- [ ] Implemented `toDto()` method
+
+### 9.3 Data Transfer Objects
+- [ ] Created DTO class as `readonly`
+- [ ] Implemented `fromRequest()` method
+- [ ] Implemented `fromArray()` method
+- [ ] Implemented `toArray()` method
+- [ ] Used proper type hints
+
+### 9.4 Controller
+- [ ] Created controller with service injection
+- [ ] Implemented authorization checks
+- [ ] Used route model binding
+- [ ] Returned appropriate HTTP status codes
+- [ ] Used API Resources for responses
+
+### 9.5 Services
+- [ ] Created service classes for each action
+- [ ] Used single responsibility principle
+- [ ] Accepted DTOs as parameters
+- [ ] Contained all business logic
+- [ ] Handled exceptions appropriately
+
+### 9.6 API Resources
+- [ ] Created resource class for single items
+- [ ] Created collection class if needed
+- [ ] Used type-safe property extraction
+- [ ] Handled relationships with `whenLoaded()`
+- [ ] Formatted responses consistently
+
+### 9.7 Testing
+- [ ] Created comprehensive API test suite
+- [ ] Tested all CRUD operations
+- [ ] Tested authentication and authorization
+- [ ] Tested validation scenarios
+- [ ] Tested business logic edge cases
+- [ ] Tested error conditions
+
+## 10. Example Implementation
+
+### Complete implementation example following these rules:
+
+#### Route Definition
+
+```php
+// routes/api.php
+Route::post('/calendar-events', [BookingController::class, 'storeCalendarEvent']);
+Route::delete('/calendar-events/{calendarEvent}', [BookingController::class, 'destroyCalendarEvent']);
+```
+
+#### Request Object
+
+```php
+// Http/Requests/Calendar/CreateCalendarEventRequest.php
+class CreateCalendarEventRequest extends FormRequest
+{
+    public function authorize(): bool
+    {
+        return $this->user()->can('create', Booking::class);
+    }
+
+    public function rules(): array
+    {
+        return [
+            'from_date'  => 'required|date',
+            'to_date'    => 'required|date|after:from_date',
+            'kennel_id'  => 'required|integer|exists:kennels,id',
+            'event_type' => ['required', Rule::in(CalendarEventType::cases())],
+        ];
+    }
+
+    public function toDto(): CreateCalendarEventData
+    {
+        return CreateCalendarEventData::fromRequest($this->validated());
+    }
+}
+```
+
+#### DTO
+
+```php
+// DataTransferObjects/Calendar/CreateCalendarEventData.php
+readonly class CreateCalendarEventData
+{
+    public function __construct(
+        public \DateTime         $from_date,
+        public \DateTime         $to_date,
+        public Kennel            $kennel,
+        public CalendarEventType $event_type,
+    ) {}
+
+    public static function fromRequest(array $data): self
+    {
+        return new self(
+            from_date: new \DateTime($data['from_date']),
+            to_date:   new \DateTime($data['to_date']),
+            kennel:    Kennel::findOrFail($data['kennel_id']),
+            event_type: CalendarEventType::from($data['event_type']),
+        );
+    }
+}
+```
+
+#### Controller Method
+
+```php
+// Http/Controllers/Booking/BookingController.php
+public function storeCalendarEvent(CreateCalendarEventRequest $request): JsonResponse
+{
+    $calendarEvent = $this->createCalendarEventService->execute($request->toDto());
+
+    return response()->json([
+        'message' => 'Calendar event created successfully',
+        'data'    => $calendarEvent->toArray(),
+    ], 201);
+}
+
+public function destroyCalendarEvent(CalendarEvent $calendarEvent): JsonResponse
+{
+    $this->deleteCalendarEventService->execute($calendarEvent);
+
+    return response()->json([
+        'message' => 'Calendar event deleted successfully',
+    ]);
+}
+```
+
+#### Service
+
+```php
+// Services/Calendar/CreateCalendarEventService.php
+class CreateCalendarEventService
+{
+    public function execute(CreateCalendarEventData $data): CalendarEvent
+    {
+        // Validate kennel availability
+        if (! $this->availabilityChecker->isKennelAvailable(
+            kennel: $data->kennel,
+            from:   $data->from_date,
+            to:     $data->to_date,
+        )) {
+            throw new DomainException('Kennel is not available for the selected dates.');
+        }
+
+        // Create calendar event
+        return CalendarEvent::create([
+            'from_date'  => $data->from_date,
+            'to_date'    => $data->to_date,
+            'kennel_id'  => $data->kennel->id,
+            'event_type' => $data->event_type,
+        ]);
+    }
+}
+```
+
+This architecture ensures consistency, maintainability, and proper separation of concerns across the entire **Dog Hotel PMS** application.
