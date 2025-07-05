@@ -9,9 +9,8 @@ class CompanyResource extends JsonResource
 {
     private int       $id;
     private string    $name;
-    private ?string   $email;
-    private ?string   $address;
-    private ?string   $tax_id;
+    private string    $legal_name;
+    private string    $slug;
     private \DateTime $created_at;
     private \DateTime $updated_at;
 
@@ -21,9 +20,8 @@ class CompanyResource extends JsonResource
 
         $this->id         = $company->id;
         $this->name       = $company->name;
-        $this->email      = $company->email;
-        $this->address    = $company->address;
-        $this->tax_id     = $company->tax_id;
+        $this->legal_name = $company->legal_name;
+        $this->slug       = $company->slug;
         $this->created_at = $company->created_at;
         $this->updated_at = $company->updated_at;
     }
@@ -33,9 +31,8 @@ class CompanyResource extends JsonResource
         return [
             'id'         => $this->id,
             'name'       => $this->name,
-            'email'      => $this->email,
-            'address'    => $this->address,
-            'tax_id'     => $this->tax_id,
+            'legal_name' => $this->legal_name,
+            'slug'       => $this->slug,
             'created_at' => $this->created_at?->format('c'),
             'updated_at' => $this->updated_at?->format('c'),
         ];

@@ -50,7 +50,9 @@ class SiteResource extends JsonResource
             'company_id'   => $this->company_id,
             'created_at'   => $this->created_at?->format('c'),
             'updated_at'   => $this->updated_at?->format('c'),
-            'company'      => new CompanyResource($this->whenLoaded('company')),
+            'company'      => $this->when($this->relationLoaded('company'), function () {
+                return new CompanyResource($this->company);
+            }),
         ];
     }
 } 
