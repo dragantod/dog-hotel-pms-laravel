@@ -673,6 +673,6 @@ class CreateCalendarEventService
 
 ## 11. Running commands
 
-- All instances of project are run using docker-compose. When running commands execute them in already running docker container with name dog-hotel-laravel
+- All instances of project are run using docker-compose. When running commands execute them in already running docker container with name dog-hotel-laravel. So for example use when calling a command you will do docker exec dog-hotel-laravel [command], or add -it if needed.
 
 This architecture ensures consistency, maintainability, and proper separation of concerns across the entire **Dog Hotel PMS** application.

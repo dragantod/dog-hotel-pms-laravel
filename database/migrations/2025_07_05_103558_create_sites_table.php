@@ -13,6 +13,7 @@ return new class extends Migration
     {
         Schema::create('sites', function (Blueprint $table) {
             $table->id();
+            $table->foreignId('company_id')->constrained('companies');
             $table->string('name');
             $table->string('address');
             $table->string('city');
@@ -20,7 +21,6 @@ return new class extends Migration
             $table->string('country_code');
             $table->string('timezone');
             $table->string('tax_id')->nullable();
-            $table->foreignId('company_id')->constrained('companies');
             $table->timestamps();
 
             $table->unique(['company_id', 'name']);
