@@ -15,7 +15,7 @@ This document defines the comprehensive rules and patterns for creating features
 
 ```php
 // routes/api.php or package‑specific routes/api.php
-Route::middleware(['api', 'auth:sanctum', EnsurePmsEnabled::class, 'ensure-company-access', 'ensure-hotel-view-permission'])
+Route::middleware(['api', 'auth:sanctum', 'ensure-hotel-view-permission'])
     ->prefix('v1')
     ->group(function () {
         // Route definitions here
